@@ -11,80 +11,85 @@ jobs:
 
       - name: Compile the code
         run: gcc main.c -o main 
-        # 컴파일 실패 시 즉시 Fail 처리됩니다.
-
+        
       - name: Run Test Cases and Check Output
         id: code_test
         run: |
-          # ----------------------------------------------------
-          # 1. 새로운 테스트 입력 시퀀스 정의 (21, 37, 45, 93, 0)
+          # 1. 테스트 입력 시퀀스
           TEST_INPUT="21\n37\n45\n93\n0\n"
-          
-          # 2. 새로운 예상 출력 정의 (총 4회 판별)
-          EXPECTED_OUTPUT=$(cat <<EOF
-정수 입력: 21
-21: 비소수
-정수 입력: 37
-37: 소수
-정수 입력: 45
-45: 비소수
-정수 입력: 93
-93: 비소수
-정수 입력: 0
-===========
-종료
-소수 판별 횟수: 4회
-실행시간: 
-EOF
-          )
 
-          # 3. 코드 실행 및 출력 캡처
+          # 2. 예상 출력 정의 (프롬프트와 마지막 입력 '0'을 모두 제거한 순수한 결과만 남김)
+          EXPECTED_STATIC_OUTPUT_CONTENT="21: 비소수\n37: 소수\n45: 비소수\n93: 비소수\n===========\n종료\n소수 판별 횟수: 4회\n"
+          
+          # 3. 실제 코드 실행 및 출력 캡처
           ACTUAL_OUTPUT=$(echo -e "$TEST_INPUT" | ./main)
           echo "$ACTUAL_OUTPUT" > actual_output.txt
 
-          # 4. 출력 비교 로직 (이전과 동일하게 출력 불일치 최소화 로직 사용)
+          # 4. 출력 후처리 (모든 '정수 입력: ' 프롬프트를 제거)
+          PROCESSED_OUTPUT=$(echo "$ACTUAL_OUTPUT" | sed 's/정수 입력: //g' | sed 's/\r//g')
           
-          # 4.1. 정규식 패턴 정의 (실행시간 부분 유연하게 처리)
+          # 5. 출력 비교 로직 초기화
+          TEST_RESULT="fail"
+          GRADING_RESULT="output_fail" # 기본 실패 사유: 프로그램 출력 문제
           EXEC_TIME_PATTERN="실행시간: [0-9]+\.[0-9]{6}초"
 
-          # 4.2. 예상 출력에서 실행시간 라인 제외 후 비교를 위한 텍스트 추출
-          EXPECTED_STATIC_LINES=$(echo "$EXPECTED_OUTPUT" | head -n -1)
+          # 5.1. 처리된 출력에서 정적 부분만 추출 (head -n 7)
+          ACTUAL_STATIC_LINES=$(echo "$PROCESSED_OUTPUT" | head -n 7)
           
-          # 4.3. 실제 출력에서 실행시간 라인 제외 후 횟수/결과 일치 검사
-          ACTUAL_STATIC_LINES=$(cat actual_output.txt | head -n -1)
-          
-          if [ "$ACTUAL_STATIC_LINES" = "$EXPECTED_STATIC_LINES" ]; then
+          # 5.2. 파일로 저장 (EOF 일치)
+          echo -n "$ACTUAL_STATIC_LINES" > actual_static_output.txt
+          echo -n -e "$EXPECTED_STATIC_OUTPUT_CONTENT" > expected_static_output.txt
+
+          # 5.3. diff 비교
+          if diff -qaw expected_static_output.txt actual_static_output.txt; then
             
-            # 4.4. 횟수/결과 일치 시, 실행시간 형식 검사
-            if tail -n 1 actual_output.txt | grep -E "$EXEC_TIME_PATTERN"; then
-              echo "::set-output name=result::success"
-              echo "✅ Test Passed: Output and logic are correct."
-            else
-              echo "::set-output name=result::fail"
-              echo "::error::❌ Test Failed: Execution time format is incorrect or missing."
-              echo "Expected format: 실행시간: 0.000000초"
+            # diff 성공 시, 마지막 실행시간 형식만 검사
+            if echo "$ACTUAL_OUTPUT" | tail -n 1 | grep -E "$EXEC_TIME_PATTERN"; then
+              TEST_RESULT="success"
+              GRADING_RESULT="success" # 최종 성공
             fi
             
           else
-            echo "::set-output name=result::fail"
-            echo "::error::❌ Test Failed: Output Mismatch."
-            echo "--- Expected Static Lines ---"
-            echo "$EXPECTED_STATIC_LINES"
-            echo "--- Actual Static Lines ---"
-            echo "$ACTUAL_STATIC_LINES"
-            echo "---------------------------"
+            echo "::error::❌ Test Failed: Output Mismatch (diff check failed)."
+            echo "--- Diff Output ---"
+            diff expected_static_output.txt actual_static_output.txt
+            echo "-------------------"
+            # GRADING_RESULT는 이미 "output_fail"로 설정되어 있음
           fi
-          echo "Test result: ${{ steps.code_test.outputs.result }}"
+
+          # 6. 🚨 주석 개수 검사 (Fail-Fast Overwrite)
+          MIN_COMMENTS=4
+          # //, /*, */ 등의 주석 마커가 포함된 모든 줄을 계산합니다.
+          CURRENT_COMMENTS=$(grep -c -E '//|/\*|\*/' main.c)
+
+          if [ "$CURRENT_COMMENTS" -lt "$MIN_COMMENTS" ]; then
+            TEST_RESULT="fail" # 출력 비교 성공 여부와 관계없이 최종 실패
+            GRADING_RESULT="comment_fail" # 최종 실패 사유: 주석 부족
+            echo "::warning::⚠️ Code structure check failed: Comments too few ($CURRENT_COMMENTS / $MIN_COMMENTS)"
+          fi
+          
+          # 최종 결과 설정
+          echo "result=$TEST_RESULT" >> $GITHUB_OUTPUT
+          echo "grading_result=$GRADING_RESULT" >> $GITHUB_OUTPUT # 상세 사유 전달
+          echo "Test result: $TEST_RESULT"
+
 
       # ----------------------------------------------------
-      # 최종 Fail 보장 로직 (가장 중요)
+      # 최종 Fail 보장 및 사유 보고 로직
       - name: Final Grading and Failure Trigger
         run: |
-          code_result="${{ steps.code_test.outputs.result }}"
-
-          if [ "$code_result" == "success" ]; then
+          GRADING_RESULT="${{ steps.code_test.outputs.grading_result }}"
+          
+          if [ "$GRADING_RESULT" == "success" ]; then
             echo "::notice::✔ 최종 채점 통과"
           else
             echo "::error::❌ 최종 채점 실패"
+            
+            if [ "$GRADING_RESULT" == "comment_fail" ]; then
+              echo "::error::🚨 실패 사유: 주석 부족 (main.c 파일에 최소 4개의 주석이 필요합니다.)"
+            elif [ "$GRADING_RESULT" == "output_fail" ]; then
+              echo "::error::🚨 실패 사유: 프로그램 동작/출력 불일치 (결과 값이 예상과 다릅니다.)"
+            fi
+            
             exit 1 
           fi
