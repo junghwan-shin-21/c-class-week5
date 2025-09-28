@@ -1,0 +1,58 @@
+name: Grading
+
+on: [push]
+
+jobs:
+  grade-assignment:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Compile the code
+        run: gcc main.c -o main
+
+      - name: Grade Test Case (N=4)
+        id: code_test
+        run: |
+          echo "4" | ./main > output1.txt
+          cat output1.txt
+          expected_output=$(printf "1부터 10까지의 정수를 입력하세요: *******\n *****\n  ***\n   *\n")
+          if diff -q output1.txt <(echo -e "$expected_output"); then
+            echo "::set-output name=result::success"
+            echo "Test Passed!"
+          else
+            echo "::set-output name=result::fail"
+            echo "Test Failed. Output mismatch."
+          fi
+          echo "Test result: ${{ steps.code_test.outputs.result }}"
+
+      - name: Check Comments
+        id: comment_check
+        run: |
+          comment_count=$(grep -c -E "//|/\*" main.c)
+          if [ "$comment_count" -lt 4 ]; then
+            echo "::set-output name=result::fail"
+            echo "::warning::Warning: Number of comments is less than 4."
+          else
+            echo "::set-output name=result::success"
+          fi
+          echo "Comment check result: ${{ steps.comment_check.outputs.result }}"
+
+      - name: Final Result and Exit
+        run: |
+          code_result="${{ steps.code_test.outputs.result }}"
+          comment_result="${{ steps.comment_check.outputs.result }}"
+
+          if [ "$code_result" == "success" ] && [ "$comment_result" == "success" ]; then
+            echo "::notice::✔ Success"
+          elif [ "$code_result" == "success" ] && [ "$comment_result" == "fail" ]; then
+            echo "::error::❌ Fail - 1 (동작 정상, 주석 부족)"
+            exit 1
+          elif [ "$code_result" == "fail" ] && [ "$comment_result" == "success" ]; then
+            echo "::error::❌ Fail - 2 (동작 실패, 주석 정상)"
+            exit 1
+          else
+            echo "::error::❌ Fail - 3 (동작 실패, 주석 부족)"
+            exit 1
+          fi
